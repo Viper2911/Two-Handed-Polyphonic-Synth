@@ -58,7 +58,7 @@ with st.container():
         key="timbre_classifier",
         mode= WebRtcMode.SENDONLY,
         audio_processor_factory=TimbreAudioProcessor,
-        rtc_configuration={"iceServers":[{"urls": [stun:stun.l.google.com:19302]}]}
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
 
 model_path_onnx="gesture_model.onnx"
@@ -112,7 +112,7 @@ html_code = f"""
             for(let i=0; i<NUM_VOICES; i++) {{
                 let osc = audioCtx.createOscillator();
                 let gain = audioCtx.createGain();
-                osc.type = currentWaveform; // Initialized from Python state
+                osc.type = currentWaveform; 
                 gain.gain.value = 0;
                 osc.connect(gain);
                 gain.connect(masterGain);
