@@ -1,9 +1,3 @@
-"""
-Project: AI Radial Synthesizer - Full Dual-ML Integration
-Author: Aadil Hasan
-Registration Number: 5000
-"""
-
 import streamlit as st
 import base64
 import os
@@ -68,11 +62,20 @@ with st.container():
             </div>
         </div>
     """, unsafe_allow_html=True)
+    
     webrtc_streamer(
         key="timbre_classifier",
         mode=WebRtcMode.SENDONLY,
         audio_processor_factory=TimbreAudioProcessor,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        media_stream_constraints={
+            "audio": {
+                "echoCancellation": False,
+                "noiseSuppression": False,
+                "autoGainControl": False
+            },
+            "video": False
+        }
     )
 
 model_path_onnx = "gesture_model.onnx"
@@ -120,7 +123,7 @@ html_code = f"""
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             audioCtx = new AudioContext();
             masterGain = audioCtx.createGain();
-            masterGain.gain.value = 0.3; 
+            masterGain.gain.value = 0.5; 
             masterGain.connect(audioCtx.destination);
             
             for(let i=0; i<NUM_VOICES; i++) {{
@@ -138,32 +141,35 @@ html_code = f"""
 
         function playChord(rootIndex, chordIndex, shouldPlay) {{
             if (!audioCtx) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
             const rootFreq = baseFreqs[rootIndex];
             const chord = chordTypes[chordIndex];
+            const now = audioCtx.currentTime;
             
             if (shouldPlay) {{
                 for (let i = 0; i < NUM_VOICES; i++) {{
                     if (i < chord.intervals.length) {{
                         const freq = rootFreq * Math.pow(2, chord.intervals[i] / 12);
-                        oscillators[i].frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.02);
-                        noteGains[i].gain.setTargetAtTime(1.0 / chord.intervals.length, audioCtx.currentTime, 0.05);
+                        oscillators[i].frequency.setTargetAtTime(freq, now, 0.05);
+                        noteGains[i].gain.setTargetAtTime(1.0 / chord.intervals.length, now, 0.02);
                     }} else {{
-                        noteGains[i].gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+                        noteGains[i].gain.setTargetAtTime(0, now, 0.02);
                     }}
                 }}
             }} else {{
                 for (let i = 0; i < NUM_VOICES; i++) {{
-                    noteGains[i].gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+                    noteGains[i].gain.setTargetAtTime(0, now, 0.05);
                 }}
             }}
         }}
 
-        function getAngle(wrist, indexTip) {{
-            let dx = wrist.x - indexTip.x; 
-            let dy = wrist.y - indexTip.y; 
-            let angle = Math.atan2(dx, dy) * (180 / Math.PI);
+        function getAngle(centerPoint, targetPoint) {{
+            let dx = targetPoint.x - centerPoint.x; 
+            let dy = targetPoint.y - centerPoint.y; 
+            let angle = Math.atan2(dy, dx) * (180 / Math.PI);
             if (angle < 0) angle += 360;
-            return angle;
+            return (angle + 90) % 360; 
         }}
 
         function drawFixedRadialMenu(cx, cy, radius, numSlices, labels, activeIndex, centerText, isPlaying) {{
@@ -264,7 +270,6 @@ html_code = f"""
             }} catch (error) {{
                 overlayBtn.style.backgroundColor = "rgba(200, 0, 0, 0.9)";
                 overlayBtn.innerText = "ERROR: " + error.message;
-                console.error(error);
             }}
         }});
 
@@ -274,75 +279,88 @@ html_code = f"""
         let lastRootIndex = -1;
         let lastChordIndex = -1;
         let lastShouldPlay = false;
+        
+        let isPredicting = false;
 
         async function predictWebcam() {{
-            let startTimeMs = performance.now();
+            if (isPredicting) {{
+                window.requestAnimationFrame(predictWebcam);
+                return;
+            }}
             
-            if (lastVideoTime !== video.currentTime) {{
-                lastVideoTime = video.currentTime;
-                const results = handLandmarker.detectForVideo(video, startTimeMs);
+            isPredicting = true;
+            
+            try {{
+                let startTimeMs = performance.now();
                 
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                if (lastVideoTime !== video.currentTime) {{
+                    lastVideoTime = video.currentTime;
+                    let shouldPlay = false;
+                    
+                    const wheelRadius = Math.min(canvas.width, canvas.height) * 0.3;
+                    const leftWheelX = canvas.width * 0.25;
+                    const rightWheelX = canvas.width * 0.75;
+                    const wheelY = canvas.height * 0.5;
+                    
+                    const results = handLandmarker.detectForVideo(video, startTimeMs);
 
-                let shouldPlay = false;
+                    if (results.landmarks && results.landmarks.length > 0) {{
+                        shouldPlay = true; 
 
-                const wheelRadius = Math.min(canvas.width, canvas.height) * 0.3;
-                const leftWheelX = canvas.width * 0.25;
-                const rightWheelX = canvas.width * 0.75;
-                const wheelY = canvas.height * 0.5;
+                        for (let i = 0; i < results.landmarks.length; i++) {{
+                            const marks = results.landmarks[i];
+                            const indexTip = marks[8];
+                            let pxIndexTip = {{ x: (1 - indexTip.x)*canvas.width, y: indexTip.y*canvas.height }};
 
-                if (results.landmarks && results.landmarks.length > 0) {{
-                    for (let i = 0; i < results.landmarks.length; i++) {{
-                        const marks = results.landmarks[i];
-                        const isLeftHand = results.handedness[i][0].categoryName === "Right"; 
-                        
-                        ctx.fillStyle = isLeftHand ? "#00ffcc" : "#ff3366";
-                        for(let j=0; j<marks.length; j++) {{
-                            ctx.beginPath();
-                            ctx.arc((1 - marks[j].x)*canvas.width, marks[j].y*canvas.height, 4, 0, 2*Math.PI);
-                            ctx.fill();
-                        }}
-
-                        const wrist = marks[0];
-                        const indexTip = marks[8];
-
-                        let pxWrist = {{ x: (1 - wrist.x)*canvas.width, y: wrist.y*canvas.height }};
-                        let pxIndexTip = {{ x: (1 - indexTip.x)*canvas.width, y: indexTip.y*canvas.height }};
-                        const angle = getAngle(pxWrist, pxIndexTip);
-
-                        if (isLeftHand) {{
-                            currentRootIndex = Math.floor((angle + 15) / 30) % 12;
-                            if (currentRootIndex < 0) currentRootIndex += 12;
-
-                            if (onnxSession) {{
-                                const flatLandmarks = new Float32Array(63);
-                                for(let j=0; j<21; j++) {{
-                                    flatLandmarks[j*3] = marks[j].x - wrist.x;
-                                    flatLandmarks[j*3+1] = marks[j].y - wrist.y;
-                                    flatLandmarks[j*3+2] = marks[j].z - wrist.z;
-                                }}
-                                const tensor = new ort.Tensor('float32', flatLandmarks, [1, 63]);
-                                const onnxResults = await onnxSession.run({{ float_input: tensor }});
-                                if (Number(onnxResults.output_label.data[0]) === 0) shouldPlay = true;
+                            if (pxIndexTip.x < canvas.width / 2) {{
+                                let leftCenter = {{ x: leftWheelX, y: wheelY }};
+                                const angle = getAngle(leftCenter, pxIndexTip);
+                                
+                                currentRootIndex = Math.floor((angle + 15) / 30) % 12;
+                                if (currentRootIndex < 0) currentRootIndex += 12;
+                            }} else {{
+                                let rightCenter = {{ x: rightWheelX, y: wheelY }};
+                                const angle = getAngle(rightCenter, pxIndexTip);
+                                
+                                currentChordIndex = Math.floor((angle + 22.5) / 45) % 8;
+                                if (currentChordIndex < 0) currentChordIndex += 8;
                             }}
-                        }} else {{
-                            currentChordIndex = Math.floor((angle + 22.5) / 45) % 8;
-                            if (currentChordIndex < 0) currentChordIndex += 8;
+                        }}
+                    }}
+                    
+                    if (currentRootIndex !== lastRootIndex || currentChordIndex !== lastChordIndex || shouldPlay !== lastShouldPlay) {{
+                        playChord(currentRootIndex, currentChordIndex, shouldPlay);
+                        lastRootIndex = currentRootIndex;
+                        lastChordIndex = currentChordIndex;
+                        lastShouldPlay = shouldPlay;
+                    }}
+                    
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    drawFixedRadialMenu(leftWheelX, wheelY, wheelRadius, 12, noteNames, currentRootIndex, shouldPlay ? noteNames[currentRootIndex] : "OFF", shouldPlay);
+                    drawFixedRadialMenu(rightWheelX, wheelY, wheelRadius, 8, chordTypes.map(c=>c.name), currentChordIndex, chordTypes[currentChordIndex].name, shouldPlay);
+                    
+                    if (results.landmarks && results.landmarks.length > 0) {{
+                        for (let i = 0; i < results.landmarks.length; i++) {{
+                            const marks = results.landmarks[i];
+                            const indexTip = marks[8];
+                            let pxIndexTip = {{ x: (1 - indexTip.x)*canvas.width, y: indexTip.y*canvas.height }};
+                            
+                            ctx.fillStyle = pxIndexTip.x < canvas.width / 2 ? "#00ffcc" : "#ff3366";
+                            for(let j=0; j<marks.length; j++) {{
+                                ctx.beginPath();
+                                ctx.arc((1 - marks[j].x)*canvas.width, marks[j].y*canvas.height, 4, 0, 2*Math.PI);
+                                ctx.fill();
+                            }}
                         }}
                     }}
                 }}
-                
-                drawFixedRadialMenu(leftWheelX, wheelY, wheelRadius, 12, noteNames, currentRootIndex, shouldPlay ? noteNames[currentRootIndex] : "OFF", shouldPlay);
-                drawFixedRadialMenu(rightWheelX, wheelY, wheelRadius, 8, chordTypes.map(c=>c.name), currentChordIndex, chordTypes[currentChordIndex].name, shouldPlay);
-                
-                if (currentRootIndex !== lastRootIndex || currentChordIndex !== lastChordIndex || shouldPlay !== lastShouldPlay) {{
-                    playChord(currentRootIndex, currentChordIndex, shouldPlay);
-                    lastRootIndex = currentRootIndex;
-                    lastChordIndex = currentChordIndex;
-                    lastShouldPlay = shouldPlay;
-                }}
+            }} catch (err) {{
+                console.error("Frame processing error:", err);
+            }} finally {{
+                isPredicting = false;
+                window.requestAnimationFrame(predictWebcam);
             }}
-            window.requestAnimationFrame(predictWebcam);
         }}
         
         window.addEventListener('resize', () => {{
