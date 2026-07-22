@@ -22,7 +22,7 @@ if 'wave_type' not in st.session_state:
 
 @st.cache_resource
 def load_audio_model():
-    model_path = 'timbre_bilstm.h5'
+    model_path = 'models/timbre_bilstm.h5'
     if os.path.exists(model_path):
         return load_model(model_path)
     return None
@@ -78,7 +78,7 @@ with st.container():
         }
     )
 
-model_path_onnx = "gesture_model.onnx"
+model_path_onnx = "models/gesture_model.onnx"
 onnx_base64 = ""
 if os.path.exists(model_path_onnx):
     with open(model_path_onnx, "rb") as f:
